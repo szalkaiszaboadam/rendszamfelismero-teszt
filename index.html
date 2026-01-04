@@ -3,106 +3,154 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Profi Rendszám Felismerő</title>
+    <title>Javított Rendszám Felismerő</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; background: #1a1a1a; color: white; margin: 0; padding: 20px; }
-        #video-container { position: relative; width: 100%; max-width: 600px; border: 2px solid #444; border-radius: 15px; overflow: hidden; }
-        video { width: 100%; display: block; }
+        body { font-family: sans-serif; background: #121212; color: white; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 10px; }
+        #container { position: relative; width: 100%; max-width: 500px; border-radius: 15px; overflow: hidden; }
+        video { width: 100%; display: block; background: #222; }
         
-        /* A célkereszt, amit vágni fogunk */
-        .overlay { 
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
-            width: 70%; height: 80px; border: 4px solid #00ff00; 
-            box-shadow: 0 0 0 2000px rgba(0,0,0,0.5); pointer-events: none; 
+        /* Célkereszt */
+        .guide {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 80%; height: 70px; border: 3px solid #00ff00;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.6); pointer-events: none;
         }
+
+        .controls { margin: 20px 0; width: 100%; max-width: 500px; text-align: center; }
+        button { 
+            width: 100%; padding: 15px; font-size: 1.2rem; font-weight: bold;
+            background: #007bff; color: white; border: none; border-radius: 10px; cursor: pointer;
+        }
+        button:active { background: #0056b3; }
+
+        #result-area {
+            background: #222; width: 100%; max-width: 500px; padding: 15px;
+            border-radius: 10px; text-align: center; border: 2px solid #444;
+        }
+        .plate-display { font-size: 2.5rem; font-weight: bold; color: #00ff00; margin: 10px 0; letter-spacing: 2px; }
         
-        button { margin-top: 20px; padding: 15px 40px; font-size: 18px; font-weight: bold; background: #28a745; color: white; border: none; border-radius: 50px; cursor: pointer; transition: 0.3s; }
-        button:active { transform: scale(0.95); }
-        
-        #result-box { margin-top: 20px; background: #333; padding: 20px; border-radius: 10px; width: 80%; max-width: 400px; text-align: center; border-bottom: 5px solid #007bff; }
-        .raw-data { font-size: 12px; color: #888; margin-bottom: 10px; }
-        .final-plate { font-size: 32px; font-weight: bold; color: #fff; letter-spacing: 3px; }
+        /* Ezen látszik, mit lát az algoritmus */
+        #debug-canvas { border: 1px solid #555; width: 100%; height: auto; margin-top: 10px; background: white; }
+        .label { font-size: 0.8rem; color: #888; margin-top: 10px; }
     </style>
 </head>
 <body>
 
-    <h2>Rendszám Beolvasó</h2>
-    
-    <div id="video-container">
-        <video id="webcam" autoplay playsinline></video>
-        <div class="overlay"></div>
+    <h2>Rendszám Olvasó V2</h2>
+
+    <div id="container">
+        <video id="video" autoplay playsinline></video>
+        <div class="guide"></div>
     </div>
 
-    <button id="capture-btn">FOTÓZÁS ÉS OLVASÁS</button>
-    
-    <div id="result-box">
-        <div class="raw-data" id="status">Kamera készenlétben</div>
-        <div class="final-plate" id="result">---</div>
+    <div class="controls">
+        <button id="scanBtn">BEOLVASÁS</button>
     </div>
 
-    <canvas id="crop-canvas" style="display:none;"></canvas>
+    <div id="result-area">
+        <div id="status">Készen áll</div>
+        <div class="plate-display" id="result">---</div>
+        
+        <div class="label">Ezt látja a gép (tisztított kép):</div>
+        <canvas id="debug-canvas"></canvas>
+    </div>
 
     <script>
-        const video = document.getElementById('webcam');
-        const canvas = document.getElementById('crop-canvas');
+        const video = document.getElementById('video');
+        const scanBtn = document.getElementById('scanBtn');
         const resultDiv = document.getElementById('result');
         const statusDiv = document.getElementById('status');
+        const debugCanvas = document.getElementById('debug-canvas');
 
-        async function init() {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } 
-            });
-            video.srcObject = stream;
+        // Kamera indítása
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: { ideal: 1280 } }
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                statusDiv.innerText = "Hiba: Nincs kamera hozzáférés.";
+            }
         }
 
-        document.getElementById('capture-btn').onclick = async () => {
+        // Képfeldolgozó függvény (Thresholding)
+        function preprocessImage(ctx, width, height) {
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            
+            for (let i = 0; i < data.length; i += 4) {
+                // Szürkeárnyalat (Luminancia módszer)
+                const brightness = 0.34 * data[i] + 0.5 * data[i + 1] + 0.16 * data[i + 2];
+                
+                // Küszöbölés: Ha sötétebb mint 120, legyen tiszta fekete, különben fehér
+                // Ez kiemeli a betűket a rendszámtábla alapjáról
+                const val = brightness < 125 ? 0 : 255;
+                
+                data[i] = data[i+1] = data[i+2] = val;
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        scanBtn.onclick = async () => {
             statusDiv.innerText = "Feldolgozás...";
+            scanBtn.disabled = true;
+
+            // 1. KIVÁGÁS: Csak a kereten belüli részt vesszük
+            const dctx = debugCanvas.getContext('2d');
             
-            // 1. KÉPVÁGÁS (Csak a zöld keret tartalmát vágjuk ki)
-            const ctx = canvas.getContext('2d');
-            const scale = video.videoWidth / video.clientWidth;
+            // Arányok kiszámítása
+            const scaleX = video.videoWidth / video.clientWidth;
+            const scaleY = video.videoHeight / video.clientHeight;
             
-            // A keret pontos koordinátái (középen 70% széles, 80px magas)
-            const w = video.videoWidth * 0.7;
-            const h = (80 * (video.videoWidth / video.clientWidth));
-            const x = (video.videoWidth - w) / 2;
-            const y = (video.videoHeight - h) / 2;
+            const cropW = video.videoWidth * 0.8;
+            const cropH = 100 * scaleY; // kb. 100px magas a keret
+            const cropX = (video.videoWidth - cropW) / 2;
+            const cropY = (video.videoHeight - cropH) / 2;
 
-            canvas.width = w;
-            canvas.height = h;
-            ctx.drawImage(video, x, y, w, h, 0, 0, w, h);
+            debugCanvas.width = cropW;
+            debugCanvas.height = cropH;
 
-            // 2. OCR FUTTATÁSA SZŰRŐKKEL
-            const worker = await Tesseract.createWorker();
-            await worker.loadLanguage('eng');
-            await worker.initialize('eng');
-            
-            // Csak ezeket a karaktereket fogadja el (Whitelist)
-            await worker.setParameters({
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-            });
+            // Kép rajzolása és tisztítása
+            dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+            preprocessImage(dctx, cropW, cropH);
 
-            const { data: { text } } = await worker.recognize(canvas);
-            await worker.terminate();
+            // 2. OCR Tesseract-tal (Karakter szűréssel)
+            try {
+                const worker = await Tesseract.createWorker();
+                await worker.loadLanguage('eng');
+                await worker.initialize('eng');
+                
+                // Csak rendszám-karaktereket engedünk
+                await worker.setParameters({
+                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+                });
 
-            // 3. EREDMÉNY TISZTÍTÁSA (Regex)
-            // Megkeressük a szövegben a rendszámra hasonlító részeket
-            // Példák: ABC-123 vagy AA-BB-123
-            const pattern = /([A-Z]{2,3}-?[A-Z]{0,2}-?\d{3})/g;
-            const found = text.toUpperCase().match(pattern);
+                const { data: { text } } = await worker.recognize(debugCanvas);
+                await worker.terminate();
 
-            if (found) {
-                resultDiv.innerText = found[0];
-                statusDiv.innerText = "Találat!";
-            } else {
-                // Ha nem talál szabályos mintát, kiírjuk a nyers adatot tisztítva
-                resultDiv.innerText = text.replace(/[^A-Z0-9-]/g, "").substring(0, 10);
-                statusDiv.innerText = "Nyers adat (nem biztos):";
+                // 3. TISZTÍTÁS REGEX-EL
+                // Magyar rendszám minták: AAA-111 vagy AA-AA-111
+                const cleaned = text.replace(/[^A-Z0-9-]/g, "").trim();
+                
+                if (cleaned.length >= 4) {
+                    resultDiv.innerText = cleaned;
+                    statusDiv.innerText = "Sikeres beolvasás!";
+                } else {
+                    resultDiv.innerText = "???";
+                    statusDiv.innerText = "Nem felismerhető. Próbáld közelebbről!";
+                }
+
+            } catch (e) {
+                statusDiv.innerText = "Hiba történt.";
+                console.error(e);
+            } finally {
+                scanBtn.disabled = false;
             }
         };
 
-        init();
+        startCamera();
     </script>
 </body>
 </html>
