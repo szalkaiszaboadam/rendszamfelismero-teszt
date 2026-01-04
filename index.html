@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rendszám Felismerő WebApp</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; margin: 0; padding: 20px; }
+        #video-container { position: relative; width: 100%; max-width: 500px; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.2); }
+        video { width: 100%; display: block; }
+        .overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 80%; height: 60px; border: 3px solid #00ff00; box-sizing: border-box; pointer-events: none; }
+        button { margin-top: 20px; padding: 15px 30px; font-size: 18px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:disabled { background: #ccc; }
+        #result-container { margin-top: 20px; text-align: center; background: white; padding: 20px; border-radius: 10px; width: 100%; max-width: 500px; }
+        .plate-text { font-size: 24px; font-weight: bold; color: #333; letter-spacing: 2px; }
+        .status { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+
+    <h2>Rendszám Felismerő</h2>
+    
+    <div id="video-container">
+        <video id="webcam" autoplay playsinline></video>
+        <div class="overlay"></div> </div>
+
+    <button id="capture-btn">Rendszám beolvasása</button>
+    
+    <div id="result-container">
+        <p class="status" id="status">Kamera indítása...</p>
+        <div class="plate-text" id="result">---</div>
+    </div>
+
+    <canvas id="snapshot" style="display:none;"></canvas>
+
+    <script>
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('snapshot');
+        const captureBtn = document.getElementById('capture-btn');
+        const resultDiv = document.getElementById('result');
+        const statusDiv = document.getElementById('status');
+
+        // 1. Kamera elindítása
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: "environment" }, // Hátsó kamera mobilnál
+                    audio: false 
+                });
+                video.srcObject = stream;
+                statusDiv.innerText = "Kamera aktív. Irányítsd a keretet a rendszámra!";
+            } catch (err) {
+                statusDiv.innerText = "Hiba a kamera elérésekor: " + err.message;
+            }
+        }
+
+        // 2. Kép rögzítése és felismerése
+        captureBtn.addEventListener('click', async () => {
+            captureBtn.disabled = true;
+            statusDiv.innerText = "Felismerés folyamatban... várj egy pillanatot.";
+            resultDiv.innerText = "---";
+
+            // Vászon beállítása a videó méretére
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            
+            // Képkocka másolása a vászonra
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Tesseract OCR futtatása
+            try {
+                const result = await Tesseract.recognize(
+                    canvas,
+                    'eng', // Az angol karakterkészlet jó a rendszámokhoz
+                    { logger: m => console.log(m) }
+                );
+
+                // Eredmény tisztítása (csak betűk, számok és kötőjel)
+                const cleanedText = result.data.text.replace(/[^A-Z0-9-]/g, '').trim();
+                
+                if (cleanedText.length > 3) {
+                    resultDiv.innerText = cleanedText;
+                    statusDiv.innerText = "Sikeres beolvasás!";
+                } else {
+                    resultDiv.innerText = "Nem olvasható";
+                    statusDiv.innerText = "Próbáld közelebbről vagy jobb fényben!";
+                }
+            } catch (error) {
+                statusDiv.innerText = "Hiba történt a felismerés során.";
+                console.error(error);
+            } finally {
+                captureBtn.disabled = false;
+            }
+        });
+
+        startCamera();
+    </script>
+</body>
+</html>
