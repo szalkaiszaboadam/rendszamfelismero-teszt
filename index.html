@@ -117,69 +117,82 @@
         }
 
         scanBtn.onclick = async () => {
-            if (!worker) return; // Ha még nem töltött be, ne csináljon semmit
-            
-            scanBtn.disabled = true;
-            statusDiv.innerText = "Feldolgozás folyamatban...";
-            
-            // 1. KÉPKIVÁGÁS
-            const dctx = debugCanvas.getContext('2d');
-            const scaleY = video.videoHeight / video.clientHeight;
-            
-            // Kiszámoljuk a zöld keret pontos helyét a videón
-            const cropW = video.videoWidth * 0.85; // 85% széles
-            const cropH = 70 * scaleY; // a 70px-es keret magassága a videó felbontásában
-            const cropX = (video.videoWidth - cropW) / 2;
-            const cropY = (video.videoHeight - cropH) / 2;
+    if (!worker) return;
+    
+    scanBtn.disabled = true;
+    statusDiv.innerText = "Keresés a zajban...";
+    
+    const dctx = debugCanvas.getContext('2d');
+    const scaleY = video.videoHeight / video.clientHeight;
+    const cropW = video.videoWidth * 0.85;
+    const cropH = 75 * scaleY; 
+    const cropX = (video.videoWidth - cropW) / 2;
+    const cropY = (video.videoHeight - cropH) / 2;
 
-            debugCanvas.width = cropW;
-            debugCanvas.height = cropH;
+    debugCanvas.width = cropW;
+    debugCanvas.height = cropH;
+    dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    
+    preprocessImage(dctx, cropW, cropH);
 
-            // Képkocka kivágása és rajzolása
-            dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-            
-            // 2. KÉPTISZTÍTÁS (A varázslat!)
-            preprocessImage(dctx, cropW, cropH);
+    try {
+        const { data: { text } } = await worker.recognize(debugCanvas);
+        
+        // 1. ELŐTISZTÍTÁS: Csak nagybetűk és számok maradnak
+        let cleanedText = text.replace(/[^A-Z0-9]/g, "");
+        console.log("Nyers beolvasás:", cleanedText); // Debughoz a konzolon látod
 
-            // 3. FELISMERÉS ÉS OKOS FORMÁZÁS
-            try {
-                const { data: { text } } = await worker.recognize(debugCanvas);
-                
-                // Kiveszünk MINDEN nem-alfanumerikus karaktert.
-                // Pl. "TX- AA .123" -> "TXAA123"
-                let raw = text.replace(/[^A-Z0-9]/g, "");
-                let formatted = "???";
-                let isSuccess = false;
+        let finalPlate = "";
 
-                // OKOS FORMÁZÓ LOGIKA:
-                if (raw.length === 7) {
-                    // ÚJ TÍPUSÚ (pl. TXAA123 -> TX-AA-123)
-                    // Feltételezzük a 4 betű 3 szám formátumot
-                    formatted = `${raw.slice(0, 2)}-${raw.slice(2, 4)}-${raw.slice(4)}`;
-                    isSuccess = true;
-                } else if (raw.length === 6) {
-                    // RÉGI TÍPUSÚ (pl. AAA123 -> AAA-123)
-                    formatted = `${raw.slice(0, 3)}-${raw.slice(3)}`;
-                    isSuccess = true;
-                }
+        // 2. OKOS KERESÉS (Regex)
+        // Keressük a 4 betű + 3 számot (Új) vagy 3 betű + 3 számot (Régi)
+        const newPattern = /[A-Z]{4}\d{3}/;
+        const oldPattern = /[A-Z]{3}\d{3}/;
+        
+        // Speciális eset: Ha 'H' betűvel kezdődik és utána jön a rendszám (H-TXAA123)
+        const hPrefixPattern = /H([A-Z]{4}\d{3})|H([A-Z]{3}\d{3})/;
 
-                if (isSuccess) {
-                    resultDiv.innerText = formatted;
-                    statusDiv.innerText = "Sikeres azonosítás!";
-                    resultDiv.style.color = "#00ff00";
-                } else {
-                    resultDiv.innerText = raw.substring(0, 8) || "???";
-                    statusDiv.innerText = "Nem szabványos formátum.";
-                    resultDiv.style.color = "#ffaa00";
-                }
+        const hMatch = cleanedText.match(hPrefixPattern);
+        const newMatch = cleanedText.match(newPattern);
+        const oldMatch = cleanedText.match(oldPattern);
 
-            } catch (e) {
-                statusDiv.innerText = "Hiba az OCR során.";
-                console.error(e);
-            } finally {
-                scanBtn.disabled = false;
-            }
-        };
+        if (hMatch) {
+            // Ha H-val találta meg, a H utáni részt vesszük (hMatch[1] vagy hMatch[2])
+            const raw = hMatch[1] || hMatch[2];
+            finalPlate = formatPlate(raw);
+        } else if (newMatch) {
+            finalPlate = formatPlate(newMatch[0]);
+        } else if (oldMatch) {
+            finalPlate = formatPlate(oldMatch[0]);
+        }
+
+        if (finalPlate !== "") {
+            resultDiv.innerText = finalPlate;
+            statusDiv.innerText = "Találat!";
+            resultDiv.style.color = "#00ff00";
+        } else {
+            // Ha semmi mintát nem talált, megmutatjuk amit látott, de sárgával
+            resultDiv.innerText = cleanedText.substring(0, 8) || "???";
+            statusDiv.innerText = "Nem felismerhető minta.";
+            resultDiv.style.color = "#ffaa00";
+        }
+
+    } catch (e) {
+        statusDiv.innerText = "Hiba történt.";
+    } finally {
+        scanBtn.disabled = false;
+    }
+};
+
+// Segédfüggvény a formázáshoz
+function formatPlate(raw) {
+    if (raw.length === 7) {
+        return `${raw.slice(0, 2)}-${raw.slice(2, 4)}-${raw.slice(4)}`;
+    } else if (raw.length === 6) {
+        return `${raw.slice(0, 3)}-${raw.slice(3)}`;
+    }
+    return raw;
+}
 
         startCamera();
     </script>
