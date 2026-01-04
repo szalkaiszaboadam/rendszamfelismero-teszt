@@ -2,42 +2,41 @@
 <html lang="hu">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Javított Rendszám Felismerő</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Végleges Rendszám Felismerő</title>
     <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #121212; color: white; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 10px; }
-        #container { position: relative; width: 100%; max-width: 500px; border-radius: 15px; overflow: hidden; }
-        video { width: 100%; display: block; background: #222; }
-        
-        /* Célkereszt */
+        /* Stílus ugyanaz, mint eddig, csak mobilon szebb */
+        body { font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #121212; color: white; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 10px; touch-action: manipulation; }
+        h2 { margin: 10px 0; font-size: 1.5rem; }
+        #container { position: relative; width: 100%; max-width: 500px; border-radius: 15px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        video { width: 100%; display: block; background: #222; object-fit: cover; }
         .guide {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 80%; height: 70px; border: 3px solid #00ff00;
-            box-shadow: 0 0 0 1000px rgba(0,0,0,0.6); pointer-events: none;
+            width: 85%; height: 70px; border: 3px solid #00ff00;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.7); pointer-events: none; z-index: 10;
         }
-
         .controls { margin: 20px 0; width: 100%; max-width: 500px; text-align: center; }
         button { 
-            width: 100%; padding: 15px; font-size: 1.2rem; font-weight: bold;
-            background: #007bff; color: white; border: none; border-radius: 10px; cursor: pointer;
+            width: 100%; padding: 18px; font-size: 1.3rem; font-weight: bold; letter-spacing: 1px;
+            background: #007bff; color: white; border: none; border-radius: 12px; cursor: pointer; transition: background 0.2s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.2);
         }
-        button:active { background: #0056b3; }
-
+        button:active { background: #0056b3; transform: translateY(2px); }
+        button:disabled { background: #555; color: #aaa; cursor: not-allowed; }
         #result-area {
-            background: #222; width: 100%; max-width: 500px; padding: 15px;
-            border-radius: 10px; text-align: center; border: 2px solid #444;
+            background: #222; width: 100%; max-width: 500px; padding: 20px;
+            border-radius: 15px; text-align: center; border: 2px solid #444; box-sizing: border-box;
         }
-        .plate-display { font-size: 2.5rem; font-weight: bold; color: #00ff00; margin: 10px 0; letter-spacing: 2px; }
-        
-        /* Ezen látszik, mit lát az algoritmus */
-        #debug-canvas { border: 1px solid #555; width: 100%; height: auto; margin-top: 10px; background: white; }
-        .label { font-size: 0.8rem; color: #888; margin-top: 10px; }
+        #status { color: #aaa; font-size: 0.9rem; margin-bottom: 5px; }
+        .plate-display { font-size: 2.8rem; font-weight: 800; color: #00ff00; margin: 10px 0; letter-spacing: 3px; font-family: 'Courier New', Courier, monospace; text-shadow: 0 0 10px rgba(0,255,0,0.5); }
+        #debug-canvas { border: 2px solid #555; width: 100%; height: auto; margin-top: 15px; background: white; border-radius: 5px; }
+        .label { font-size: 0.8rem; color: #888; margin-top: 15px; text-transform: uppercase; letter-spacing: 1px; }
     </style>
 </head>
 <body>
 
-    <h2>Rendszám Olvasó V2</h2>
+    <h2>Rendszám Olvasó V3 (Végleges)</h2>
 
     <div id="container">
         <video id="video" autoplay playsinline></video>
@@ -49,10 +48,10 @@
     </div>
 
     <div id="result-area">
-        <div id="status">Készen áll</div>
+        <div id="status">Kamera indítása...</div>
         <div class="plate-display" id="result">---</div>
         
-        <div class="label">Ezt látja a gép (tisztított kép):</div>
+        <div class="label">Amit a gép "lát" (tisztított kép):</div>
         <canvas id="debug-canvas"></canvas>
     </div>
 
@@ -62,88 +61,120 @@
         const resultDiv = document.getElementById('result');
         const statusDiv = document.getElementById('status');
         const debugCanvas = document.getElementById('debug-canvas');
+        
+        // Tesseract worker globális inicializálása a gyorsabb működésért
+        let worker = null;
+        async function initWorker() {
+            statusDiv.innerText = "OCR motor betöltése...";
+            worker = await Tesseract.createWorker();
+            await worker.loadLanguage('eng');
+            await worker.initialize('eng');
+            await worker.setParameters({
+                // Csak nagybetűket és számokat engedünk, kötőjelet SEM!
+                // Így nem keveri össze a kötőjelet más karakterekkel.
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+            });
+            statusDiv.innerText = "Készen áll. Irányítsd a keretet!";
+        }
 
-        // Kamera indítása
         async function startCamera() {
             try {
+                // Megpróbáljuk a legjobb hátsó kamerát elérni
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: "environment", width: { ideal: 1280 } }
+                    video: { 
+                        facingMode: { ideal: "environment" },
+                        width: { ideal: 1920 }, // Nagyobb felbontás jobb eredmény
+                        height: { ideal: 1080 }
+                    }
                 });
                 video.srcObject = stream;
+                // Amint a videó elindul, betöltjük a workert
+                video.onloadedmetadata = () => { initWorker(); };
             } catch (err) {
-                statusDiv.innerText = "Hiba: Nincs kamera hozzáférés.";
+                statusDiv.innerText = "Hiba: Adj hozzáférést a kamerához!";
+                console.error(err);
             }
         }
 
-        // Képfeldolgozó függvény (Thresholding)
+        // Képfeldolgozás: Bináris (Fekete-Fehér) Thresholding
+        // Ez a titka a tiszta képnek, amit küldtél!
         function preprocessImage(ctx, width, height) {
             const imageData = ctx.getImageData(0, 0, width, height);
             const data = imageData.data;
             
             for (let i = 0; i < data.length; i += 4) {
-                // Szürkeárnyalat (Luminancia módszer)
-                const brightness = 0.34 * data[i] + 0.5 * data[i + 1] + 0.16 * data[i + 2];
+                // Szürkeárnyalat kiszámítása
+                const brightness = 0.3 * data[i] + 0.59 * data[i + 1] + 0.11 * data[i + 2];
                 
-                // Küszöbölés: Ha sötétebb mint 120, legyen tiszta fekete, különben fehér
-                // Ez kiemeli a betűket a rendszámtábla alapjáról
-                const val = brightness < 125 ? 0 : 255;
+                // Küszöbölés: Ami sötét, legyen koromfekete, ami világos, legyen hófehér.
+                // A 110-es érték jó kompromisszum a legtöbb fényviszonyhoz.
+                const val = brightness < 110 ? 0 : 255;
                 
                 data[i] = data[i+1] = data[i+2] = val;
             }
+            // Visszaírjuk a módosított pixeleket
             ctx.putImageData(imageData, 0, 0);
         }
 
         scanBtn.onclick = async () => {
-            statusDiv.innerText = "Feldolgozás...";
-            scanBtn.disabled = true;
-
-            // 1. KIVÁGÁS: Csak a kereten belüli részt vesszük
-            const dctx = debugCanvas.getContext('2d');
+            if (!worker) return; // Ha még nem töltött be, ne csináljon semmit
             
-            // Arányok kiszámítása
-            const scaleX = video.videoWidth / video.clientWidth;
+            scanBtn.disabled = true;
+            statusDiv.innerText = "Feldolgozás folyamatban...";
+            
+            // 1. KÉPKIVÁGÁS
+            const dctx = debugCanvas.getContext('2d');
             const scaleY = video.videoHeight / video.clientHeight;
             
-            const cropW = video.videoWidth * 0.8;
-            const cropH = 100 * scaleY; // kb. 100px magas a keret
+            // Kiszámoljuk a zöld keret pontos helyét a videón
+            const cropW = video.videoWidth * 0.85; // 85% széles
+            const cropH = 70 * scaleY; // a 70px-es keret magassága a videó felbontásában
             const cropX = (video.videoWidth - cropW) / 2;
             const cropY = (video.videoHeight - cropH) / 2;
 
             debugCanvas.width = cropW;
             debugCanvas.height = cropH;
 
-            // Kép rajzolása és tisztítása
+            // Képkocka kivágása és rajzolása
             dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+            
+            // 2. KÉPTISZTÍTÁS (A varázslat!)
             preprocessImage(dctx, cropW, cropH);
 
-            // 2. OCR Tesseract-tal (Karakter szűréssel)
+            // 3. FELISMERÉS ÉS OKOS FORMÁZÁS
             try {
-                const worker = await Tesseract.createWorker();
-                await worker.loadLanguage('eng');
-                await worker.initialize('eng');
-                
-                // Csak rendszám-karaktereket engedünk
-                await worker.setParameters({
-                    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-                });
-
                 const { data: { text } } = await worker.recognize(debugCanvas);
-                await worker.terminate();
-
-                // 3. TISZTÍTÁS REGEX-EL
-                // Magyar rendszám minták: AAA-111 vagy AA-AA-111
-                const cleaned = text.replace(/[^A-Z0-9-]/g, "").trim();
                 
-                if (cleaned.length >= 4) {
-                    resultDiv.innerText = cleaned;
-                    statusDiv.innerText = "Sikeres beolvasás!";
+                // Kiveszünk MINDEN nem-alfanumerikus karaktert.
+                // Pl. "TX- AA .123" -> "TXAA123"
+                let raw = text.replace(/[^A-Z0-9]/g, "");
+                let formatted = "???";
+                let isSuccess = false;
+
+                // OKOS FORMÁZÓ LOGIKA:
+                if (raw.length === 7) {
+                    // ÚJ TÍPUSÚ (pl. TXAA123 -> TX-AA-123)
+                    // Feltételezzük a 4 betű 3 szám formátumot
+                    formatted = `${raw.slice(0, 2)}-${raw.slice(2, 4)}-${raw.slice(4)}`;
+                    isSuccess = true;
+                } else if (raw.length === 6) {
+                    // RÉGI TÍPUSÚ (pl. AAA123 -> AAA-123)
+                    formatted = `${raw.slice(0, 3)}-${raw.slice(3)}`;
+                    isSuccess = true;
+                }
+
+                if (isSuccess) {
+                    resultDiv.innerText = formatted;
+                    statusDiv.innerText = "Sikeres azonosítás!";
+                    resultDiv.style.color = "#00ff00";
                 } else {
-                    resultDiv.innerText = "???";
-                    statusDiv.innerText = "Nem felismerhető. Próbáld közelebbről!";
+                    resultDiv.innerText = raw.substring(0, 8) || "???";
+                    statusDiv.innerText = "Nem szabványos formátum.";
+                    resultDiv.style.color = "#ffaa00";
                 }
 
             } catch (e) {
-                statusDiv.innerText = "Hiba történt.";
+                statusDiv.innerText = "Hiba az OCR során.";
                 console.error(e);
             } finally {
                 scanBtn.disabled = false;
