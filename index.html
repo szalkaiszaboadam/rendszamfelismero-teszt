@@ -63,19 +63,20 @@
         const debugCanvas = document.getElementById('debug-canvas');
         
         // Tesseract worker globális inicializálása a gyorsabb működésért
-        let worker = null;
-        async function initWorker() {
-            statusDiv.innerText = "OCR motor betöltése...";
-            worker = await Tesseract.createWorker();
-            await worker.loadLanguage('eng');
-            await worker.initialize('eng');
-            await worker.setParameters({
-                // Csak nagybetűket és számokat engedünk, kötőjelet SEM!
-                // Így nem keveri össze a kötőjelet más karakterekkel.
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
-            });
-            statusDiv.innerText = "Készen áll. Irányítsd a keretet!";
-        }
+ let worker = null;
+async function initWorker() {
+    statusDiv.innerText = "OCR motor hangolása...";
+    worker = await Tesseract.createWorker();
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+    
+    await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+        // KRITIKUS: Az egysoros mód beállítása (PSM 7)
+        tessedit_pageseg_mode: '7', 
+    });
+    statusDiv.innerText = "Készen áll!";
+}
 
         async function startCamera() {
             try {
@@ -117,70 +118,62 @@
         }
 
         scanBtn.onclick = async () => {
-            if (!worker) return; // Ha még nem töltött be, ne csináljon semmit
-            
-            scanBtn.disabled = true;
-            statusDiv.innerText = "Feldolgozás folyamatban...";
-            
-            // 1. KÉPKIVÁGÁS
-            const dctx = debugCanvas.getContext('2d');
-            const scaleY = video.videoHeight / video.clientHeight;
-            
-            // Kiszámoljuk a zöld keret pontos helyét a videón
-            const cropW = video.videoWidth * 0.85; // 85% széles
-            const cropH = 70 * scaleY; // a 70px-es keret magassága a videó felbontásában
-            const cropX = (video.videoWidth - cropW) / 2;
-            const cropY = (video.videoHeight - cropH) / 2;
+    if (!worker) return;
+    scanBtn.disabled = true;
+    statusDiv.innerText = "Elemzés...";
 
-            debugCanvas.width = cropW;
-            debugCanvas.height = cropH;
+    const dctx = debugCanvas.getContext('2d');
+    const scaleY = video.videoHeight / video.clientHeight;
+    const cropW = video.videoWidth * 0.85;
+    const cropH = 80 * scaleY;
+    const cropX = (video.videoWidth - cropW) / 2;
+    const cropY = (video.videoHeight - cropH) / 2;
 
-            // Képkocka kivágása és rajzolása
-            dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
-            
-            // 2. KÉPTISZTÍTÁS (A varázslat!)
-            preprocessImage(dctx, cropW, cropH);
+    debugCanvas.width = cropW;
+    debugCanvas.height = cropH;
+    dctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    preprocessImage(dctx, cropW, cropH);
 
-            // 3. FELISMERÉS ÉS OKOS FORMÁZÁS
-            try {
-                const { data: { text } } = await worker.recognize(debugCanvas);
-                
-                // Kiveszünk MINDEN nem-alfanumerikus karaktert.
-                // Pl. "TX- AA .123" -> "TXAA123"
-                let raw = text.replace(/[^A-Z0-9]/g, "");
-                let formatted = "???";
-                let isSuccess = false;
+    try {
+        const { data: { text } } = await worker.recognize(debugCanvas);
+        
+        // Nyers tisztítás
+        let raw = text.replace(/[^A-Z0-9]/g, "").trim();
+        console.log("Nyers beolvasás:", raw);
 
-                // OKOS FORMÁZÓ LOGIKA:
-                if (raw.length === 7) {
-                    // ÚJ TÍPUSÚ (pl. TXAA123 -> TX-AA-123)
-                    // Feltételezzük a 4 betű 3 szám formátumot
-                    formatted = `${raw.slice(0, 2)}-${raw.slice(2, 4)}-${raw.slice(4)}`;
-                    isSuccess = true;
-                } else if (raw.length === 6) {
-                    // RÉGI TÍPUSÚ (pl. AAA123 -> AAA-123)
-                    formatted = `${raw.slice(0, 3)}-${raw.slice(3)}`;
-                    isSuccess = true;
-                }
+        let finalPlate = "???";
+        let statusText = "Nem felismerhető minta";
 
-                if (isSuccess) {
-                    resultDiv.innerText = formatted;
-                    statusDiv.innerText = "Sikeres azonosítás!";
-                    resultDiv.style.color = "#00ff00";
-                } else {
-                    resultDiv.innerText = raw.substring(0, 8) || "???";
-                    statusDiv.innerText = "Nem szabványos formátum.";
-                    resultDiv.style.color = "#ffaa00";
-                }
+        // 1. ELŐSZÖR: Keressük az új típusú mintát (pl. TXAA123)
+        // Megengedjük, hogy a címer miatt legyen közte egy felesleges karakter
+        const newMatch = raw.match(/([A-Z]{2})[A-Z0-9]?([A-Z]{2})(\d{3})/);
+        
+        // 2. MÁSODSZOR: Keressük a régi típust (pl. RJN620)
+        const oldMatch = raw.match(/([A-Z]{3})(\d{3})/);
 
-            } catch (e) {
-                statusDiv.innerText = "Hiba az OCR során.";
-                console.error(e);
-            } finally {
-                scanBtn.disabled = false;
-            }
-        };
+        if (newMatch) {
+            // Ha az új típust találta (a címer karakterét [group 2] átugorjuk)
+            finalPlate = `${newMatch[1]}-${newMatch[2]}-${newMatch[3]}`;
+            statusText = "Új típusú rendszám!";
+        } else if (oldMatch) {
+            // Ha a régit találta
+            finalPlate = `${oldMatch[1]}-${oldMatch[2]}`;
+            statusText = "Régi típusú rendszám!";
+        } else {
+            // Ha egyik se, de van elég karakter, kiírjuk nyersen
+            finalPlate = raw.substring(0, 8);
+        }
 
+        resultDiv.innerText = finalPlate;
+        statusDiv.innerText = statusText + " (Nyers: " + raw + ")";
+        resultDiv.style.color = (finalPlate !== "???") ? "#00ff00" : "#ffaa00";
+
+    } catch (e) {
+        statusDiv.innerText = "Hiba történt.";
+    } finally {
+        scanBtn.disabled = false;
+    }
+};
 
         
         startCamera();
